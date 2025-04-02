@@ -1,0 +1,67 @@
+
+  name: Docker image build
+  on:
+    push:
+      branches: ['main']
+  env:
+    DOCKER_IMAGE_NAME: app-092104b6-7876-4f66-afb0-7db6bb32ae4e-id
+    DOCKER_ARTIFACTORY_REGION: us-east1
+    DOCKER_ARTIFACTORY_URL: us-east1-docker.pkg.dev/kindgi
+    GCP_DOCKER_REPO_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GCP_DOCKER_REPO_SERVICE_ACCOUNT_CREDENTIALS }}
+  
+  jobs:
+    build_docker_image:
+      name: Build and Push Docker Image
+      runs-on: ubuntu-22.04
+      steps:
+        # Has to run before google auth!
+        - name: Checkout
+          uses: actions/checkout@v4
+        # Authenticate into GCP and make docker authenticated too
+        - name: Preparing GCP service account credentials
+          run: |
+            GCP_CREDS_UN_BASE_64=$(echo ${GCP_DOCKER_REPO_SERVICE_ACCOUNT_CREDENTIALS} | base64 -d)
+            echo "::add-mask::$GCP_CREDS_UN_BASE_64"
+            echo GCP_CREDS_UN_BASE_64=$GCP_CREDS_UN_BASE_64 >> $GITHUB_ENV
+        - name: Authenticate to Google Cloud
+          uses: google-github-actions/auth@v1
+          with:
+            credentials_json: ${{ env.GCP_CREDS_UN_BASE_64 }}
+        - name: Set up Cloud SDK
+          uses: google-github-actions/setup-gcloud@v2
+        - name: Use gcloud CLI
+          run: gcloud info
+        - name: Docker auth
+          run: |
+            gcloud auth configure-docker ${{ env.DOCKER_ARTIFACTORY_REGION }}-docker.pkg.dev --quiet
+        
+        # Build the Docker image
+        - name: Creating release version info
+          run: |
+            # release_version=$(echo "${{ github.ref }}" | sed 's/refs/heads/.*///')
+            release_version=$(echo "${{ github.sha }}")
+            echo "Building release version $release_version"
+            echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
+        - name: Build the Docker image
+          run: docker buildx build --platform linux/amd64 --no-cache . --file Dockerfile --tag $DOCKER_IMAGE_NAME:$RELEASE_VERSION 
+        
+          # Tag the Docker Images
+        - name: Tag the image for the private registry
+          run: docker tag $DOCKER_IMAGE_NAME:$RELEASE_VERSION $DOCKER_ARTIFACTORY_URL/$DOCKER_IMAGE_NAME/$DOCKER_IMAGE_NAME:$RELEASE_VERSION
+        - name: Create a latest image as well
+          run: docker tag $DOCKER_IMAGE_NAME:$RELEASE_VERSION $DOCKER_ARTIFACTORY_URL/$DOCKER_IMAGE_NAME/$DOCKER_IMAGE_NAME:latest
+        
+          # Push the images to the registry
+        - name: Push the Docker image with version number
+          run: docker push $DOCKER_ARTIFACTORY_URL/$DOCKER_IMAGE_NAME/$DOCKER_IMAGE_NAME:$RELEASE_VERSION
+        - name: Push the latest tag
+          run: docker push $DOCKER_ARTIFACTORY_URL/$DOCKER_IMAGE_NAME/$DOCKER_IMAGE_NAME:latest
+  
+        # Remove the local images
+        - name: Remove the Docker image with version number
+          run: docker rmi $DOCKER_ARTIFACTORY_URL/$DOCKER_IMAGE_NAME/$DOCKER_IMAGE_NAME:$RELEASE_VERSION
+        - name: Remove the Docker image with latest tag
+          run: docker rmi $DOCKER_ARTIFACTORY_URL/$DOCKER_IMAGE_NAME/$DOCKER_IMAGE_NAME:latest
+        - name: Remove the local image
+          run: docker rmi $DOCKER_IMAGE_NAME:$RELEASE_VERSION
+  
